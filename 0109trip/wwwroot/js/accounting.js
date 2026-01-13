@@ -7,7 +7,7 @@
             currentTrip: 'trip1',
             currentDay: 'day1',
             members: [], // 預設為空
-
+            memberMap: {},
             budgets: {
                 trip1: { '小蘇': 5000, '小一': 5000, '小二': 5000 },
                 trip2: { '小蘇': 5000, '小一': 5000, '小二': 5000 }
@@ -30,6 +30,8 @@ window.onload = () => {
     // 如果有 ID，就先去後端抓成員
     if (appState.currentTripId > 0) {
         fetchMembers(appState.currentTripId).then(() => {
+            // 🔥 新增：預設載入第 1 天的支出
+            loadDailyExpenses(appState.currentTripId, 1);
             showPanel('addExpense');
             updateDashboard();
         });
@@ -70,7 +72,11 @@ function switchDay(tripId, dayKey, btn) {
 
     // 6. [預留] 觸發後端資料載入 (AJAX)
     console.log(`切換至行程 ID: ${tripId}, 天數: ${dayKey}`);
-    // loadDataFromServer(tripId, dayKey); 
+    // loadDataFromServer(tripId, dayKey);
+
+    // 🔥 新增：解析天數並載入資料
+    const dayNum = parseInt(dayKey.replace('day', '')) || 1;
+    loadDailyExpenses(tripId, dayNum);
 }
 
         //右側功能面板切換
@@ -117,6 +123,11 @@ async function fetchMembers(tripId) {
 
         // (2) 更新 appState (給記帳選單用) 
         appState.members = result.list.map(m => m.userName);
+        // 🔥 新增：建立名字對 ID 的映射表 (存檔時要用)
+        appState.memberMap = {};
+        result.list.forEach(m => {
+            appState.memberMap[m.userName] = m.userId;
+        });
 
         // (3) 更新右側面板顯示成員列表
         const panel = document.getElementById('panel-content');
@@ -196,6 +207,8 @@ async function fetchMembers(tripId) {
         }
     }
 }
+
+
 
         //新增 / 編輯支出表單
         function renderAddForm(container, editData = null) {
@@ -278,25 +291,93 @@ async function fetchMembers(tripId) {
             document.getElementById('split-total-val').innerText = t.toFixed(1);
 }
 
-        //儲存支出
-        function saveExpense() {
-            const name = document.getElementById('exp-name').value;
-            const totalPay = Number(document.getElementById('pay-total-val').innerText);
-            const totalSplit = Number(document.getElementById('split-total-val').innerText);
-            if(!name || totalPay <= 0) return alert('請填寫名稱與金額');
-            if(Math.abs(totalPay - totalSplit) > 1) return alert('金額不符！');
+// 🔥 新增：從後端撈取每日支出
+async function loadDailyExpenses(tripId, day) {
+    try {
+        const timestamp = new Date().getTime();
+        const response = await fetch(`/Accounting/GetDailyExpenses?tripId=${tripId}&day=${day}&t=${timestamp}`);
+        const result = await response.json();
 
-            let payers = {}, parts = {};
-            document.querySelectorAll('.pay-amt').forEach(i => { if(Number(i.value)>0) payers[i.dataset.user] = Number(i.value); });
-            document.querySelectorAll('.part-amt').forEach(i => { if(Number(i.value)>0) parts[i.dataset.user] = Number(i.value); });
+        // 將後端回傳的資料，塞回 appState 的結構中
+        if (!appState.data[`trip${tripId}`]) appState.data[`trip${tripId}`] = {};
+        appState.data[`trip${tripId}`][`day${day}`] = result;
 
-            const expObj = { name, cat: document.getElementById('exp-cat').value, total: totalPay, payers, parts };
-            if(appState.editingIndex !== null) appState.data[appState.currentTrip][appState.currentDay][appState.editingIndex] = expObj;
-            else appState.data[appState.currentTrip][appState.currentDay].push(expObj);
-            
-            updateDashboard();
-            showPanel('addExpense');
+        // 為了相容舊程式碼結構，更新 currentTrip 指標
+        appState.currentTrip = `trip${tripId}`;
+
+        // 更新畫面
+        updateDashboard();
+
+    } catch (error) {
+        console.error("載入支出失敗", error);
+    }
+}
+
+// 🔥 修改：儲存支出 (改成呼叫後端 API)
+async function saveExpense() {
+    const name = document.getElementById('exp-name').value;
+    const cat = document.getElementById('exp-cat').value;
+    const totalPay = Number(document.getElementById('pay-total-val').innerText);
+    const totalSplit = Number(document.getElementById('split-total-val').innerText);
+
+    if (!name || totalPay <= 0) return alert('請填寫名稱與金額');
+    if (Math.abs(totalPay - totalSplit) > 1) return alert('金額不符 (付款 != 分攤)！');
+
+    // 1. 收集付款人資料 (轉成 ID)
+    let payers = {};
+    document.querySelectorAll('.pay-amt').forEach(i => {
+        const val = Number(i.value);
+        if (val > 0) {
+            const userName = i.dataset.user;
+            const userId = appState.memberMap[userName]; // 查表找 ID
+            if (userId) payers[userId] = val;
         }
+    });
+
+    // 2. 收集分攤人資料 (轉成 ID)
+    let participants = {};
+    document.querySelectorAll('.part-amt').forEach(i => {
+        const val = Number(i.value);
+        if (val > 0) {
+            const userName = i.dataset.user;
+            const userId = appState.memberMap[userName]; // 查表找 ID
+            if (userId) participants[userId] = val;
+        }
+    });
+
+    // 3. 準備傳送物件
+    const dayNum = parseInt(appState.currentDay.replace('day', '')) || 1;
+    const payload = {
+        TripId: appState.currentTripId,
+        Day: dayNum,
+        Title: name,
+        CategoryName: cat,
+        TotalAmount: totalPay,
+        Payers: payers,
+        Participants: participants
+    };
+
+    try {
+        const response = await fetch('/Accounting/CreateExpense', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            alert('新增成功！');
+            // 重新載入資料更新畫面
+            loadDailyExpenses(appState.currentTripId, dayNum);
+            fetchMembers(appState.currentTripId); // 更新預算條
+            showPanel('addExpense');
+        } else {
+            alert('儲存失敗，請檢查資料');
+        }
+    } catch (err) {
+        console.error(err);
+        alert('連線錯誤');
+    }
+}
         //儀表板更新
         function updateDashboard() {
             const dayData = appState.data[appState.currentTrip][appState.currentDay];
