@@ -177,17 +177,25 @@ async function fetchMembers(tripId) {
         console.error('讀取成員失敗', error);
         alert('無法載入成員列表');
     }
+}
 
-    window.onload = () => {
-        // 1. 啟動時順便抓類別
-        fetchCategories();
+    // 修改 window.onload，加上 async 關鍵字
+    window.onload = async () => {
 
+        // 1. 🔥 重點：加了 await，程式會在這裡暫停，直到類別清單抓回來為止
+        await fetchCategories();
+
+        // 2. 類別抓完後，才繼續去抓成員或顯示畫面
         if (appState.currentTripId > 0) {
             fetchMembers(appState.currentTripId).then(() => {
                 loadDailyExpenses(appState.currentTripId, 1);
+                showPanel('addExpense');
+                updateDashboard();
             });
+        } else {
+            showPanel('addExpense');
+            updateDashboard();
         }
-        showPanel('addExpense');
     };
 
     // 🔥 新增：從後端撈取類別清單
@@ -238,7 +246,7 @@ async function fetchMembers(tripId) {
             }
         }
     }
-}
+
 
 
 
