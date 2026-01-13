@@ -8,12 +8,14 @@
             currentDay: 'day1',
             members: [], // 預設為空
             memberMap: {},
+            categories: [],
             budgets: {
                 trip1: { '小蘇': 5000, '小一': 5000, '小二': 5000 },
                 trip2: { '小蘇': 5000, '小一': 5000, '小二': 5000 }
             },
             splitMode: 'avg',
             editingIndex: null,
+            editingId: null,
             data: {
                 trip1: { day1: [], day2: [] },
                 trip2: { day1: [], day2: [] }
@@ -175,6 +177,36 @@ async function fetchMembers(tripId) {
         console.error('讀取成員失敗', error);
         alert('無法載入成員列表');
     }
+
+    window.onload = () => {
+        // 1. 啟動時順便抓類別
+        fetchCategories();
+
+        if (appState.currentTripId > 0) {
+            fetchMembers(appState.currentTripId).then(() => {
+                loadDailyExpenses(appState.currentTripId, 1);
+            });
+        }
+        showPanel('addExpense');
+    };
+
+    // 🔥 新增：從後端撈取類別清單
+    async function fetchCategories() {
+        try {
+            const response = await fetch('/Accounting/GetCategories');
+            if (response.ok) {
+                appState.categories = await response.json();
+                // 如果資料庫是空的，給一些預設值避免壞掉
+                if (appState.categories.length === 0) {
+                    appState.categories = ['食物', '交通', '住宿', '其他'];
+                }
+            }
+        } catch (err) {
+            console.error('類別載入失敗', err);
+            appState.categories = ['食物', '交通', '住宿', '其他']; // 發生錯誤時的備案
+        }
+    }
+
     // 新增：設定個人預算的函式 (呼叫後端 API)
     async function setPersonalBudget(userId, userName, currentBudget) {
         const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
@@ -219,13 +251,12 @@ async function fetchMembers(tripId) {
                 <label>項目名稱</label>
                 <input type="text" id="exp-name" value="${isEdit ? editData.name : ''}" placeholder="例如：晚餐"></div>
                 <div class="form-group"><label>類別</label>
-                    <select id="exp-cat">
-                        <option ${isEdit && editData.cat==='食物'?'selected':''}>食物</option>
-                        <option ${isEdit && editData.cat==='住宿'?'selected':''}>住宿</option>
-                        <option ${isEdit && editData.cat==='交通'?'selected':''}>交通</option>
-                        <option ${isEdit && editData.cat==='其他'?'selected':''}>其他</option>
-                    </select>
-                </div>
+    <select id="exp-cat">
+        ${appState.categories.map(c =>
+            `<option ${isEdit && editData.cat === c ? 'selected' : ''}>${c}</option>`
+        ).join('')}
+    </select>
+</div>
                 <div class="form-group">
                     <label>付款人 (實際出錢)</label>
                     ${appState.members.map(m => `<div class="checkbox-row"><input type="checkbox" class="pay-check" ${isEdit && editData.payers[m]?'checked':''} value="${m}" onchange="updatePayTotal()"><span>${m}</span><input type="number" class="pay-amt" data-user="${m}" value="${isEdit && editData.payers[m]?editData.payers[m]:''}" placeholder="金額" oninput="updatePayTotal()"></div>`).join('')}
@@ -313,7 +344,7 @@ async function loadDailyExpenses(tripId, day) {
     }
 }
 
-// 🔥 修改：儲存支出 (改成呼叫後端 API)
+// 儲存支出 (整合新增與更新)
 async function saveExpense() {
     const name = document.getElementById('exp-name').value;
     const cat = document.getElementById('exp-cat').value;
@@ -323,33 +354,22 @@ async function saveExpense() {
     if (!name || totalPay <= 0) return alert('請填寫名稱與金額');
     if (Math.abs(totalPay - totalSplit) > 1) return alert('金額不符 (付款 != 分攤)！');
 
-    // 1. 收集付款人資料 (轉成 ID)
+    // 收集資料 (轉 ID)
     let payers = {};
     document.querySelectorAll('.pay-amt').forEach(i => {
-        const val = Number(i.value);
-        if (val > 0) {
-            const userName = i.dataset.user;
-            const userId = appState.memberMap[userName]; // 查表找 ID
-            if (userId) payers[userId] = val;
-        }
+        if (Number(i.value) > 0) payers[appState.memberMap[i.dataset.user]] = Number(i.value);
     });
 
-    // 2. 收集分攤人資料 (轉成 ID)
     let participants = {};
     document.querySelectorAll('.part-amt').forEach(i => {
-        const val = Number(i.value);
-        if (val > 0) {
-            const userName = i.dataset.user;
-            const userId = appState.memberMap[userName]; // 查表找 ID
-            if (userId) participants[userId] = val;
-        }
+        if (Number(i.value) > 0) participants[appState.memberMap[i.dataset.user]] = Number(i.value);
     });
 
-    // 3. 準備傳送物件
-    const dayNum = parseInt(appState.currentDay.replace('day', '')) || 1;
-    const payload = {
+    // 判斷 API 路徑與資料包
+    let url = '/Accounting/CreateExpense';
+    let payload = {
         TripId: appState.currentTripId,
-        Day: dayNum,
+        Day: parseInt(appState.currentDay.replace('day', '')) || 1,
         Title: name,
         CategoryName: cat,
         TotalAmount: totalPay,
@@ -357,19 +377,31 @@ async function saveExpense() {
         Participants: participants
     };
 
+    // 🔥 如果是編輯模式，改呼叫 UpdateExpense
+    if (appState.editingId) {
+        url = '/Accounting/UpdateExpense';
+        payload.ExpenseId = appState.editingId; // 加入 ID
+    }
+
     try {
-        const response = await fetch('/Accounting/CreateExpense', {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
 
         if (response.ok) {
-            alert('新增成功！');
-            // 重新載入資料更新畫面
+            alert(appState.editingId ? '更新成功！' : '新增成功！');
+
+            // 重置編輯狀態
+            appState.editingId = null;
+            appState.editingIndex = null;
+
+            // 重新載入資料
+            const dayNum = parseInt(appState.currentDay.replace('day', '')) || 1;
             loadDailyExpenses(appState.currentTripId, dayNum);
-            fetchMembers(appState.currentTripId); // 更新預算條
-            showPanel('addExpense');
+            fetchMembers(appState.currentTripId);
+            showPanel('addExpense'); // 重置表單
         } else {
             alert('儲存失敗，請檢查資料');
         }
@@ -400,16 +432,46 @@ async function saveExpense() {
             renderBalance(dayData, document.getElementById('debt-list'));
 }
 
-        //編輯支出
-        function editExpense(idx) {
-            appState.editingIndex = idx;
-            const data = appState.data[appState.currentTrip][appState.currentDay][idx];
-            showPanel('addExpense');
-            renderAddForm(document.getElementById('panel-content'), data);
+// 編輯支出
+function editExpense(idx) {
+    appState.editingIndex = idx;
+
+    // 取得該筆支出的資料
+    // 注意：appState.data 是我們在 loadDailyExpenses 裡填入的，裡面已經有 id 了
+    const data = appState.data[appState.currentTrip][appState.currentDay][idx];
+
+    appState.editingId = data.id; // 🔥 記錄資料庫的 ExpenseId
+
+    showPanel('addExpense');
+    renderAddForm(document.getElementById('panel-content'), data);
+}
+
+// 刪除支出
+async function deleteExpense(idx) {
+    if (!confirm('確定刪除？')) return;
+
+    // 1. 取得 ID
+    const data = appState.data[appState.currentTrip][appState.currentDay][idx];
+    const expenseId = data.id;
+
+    try {
+        // 2. 呼叫後端 API
+        const response = await fetch(`/Accounting/DeleteExpense?expenseId=${expenseId}`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            // 3. 成功後重新整理畫面
+            const dayNum = parseInt(appState.currentDay.replace('day', '')) || 1;
+            loadDailyExpenses(appState.currentTripId, dayNum);
+            fetchMembers(appState.currentTripId); // 更新預算條
+        } else {
+            alert('刪除失敗');
         }
-        //刪除支出
-        function deleteExpense(idx) {
-            if(confirm('確定刪除？')) { appState.data[appState.currentTrip][appState.currentDay].splice(idx,1); updateDashboard(); }
+    } catch (err) {
+        console.error(err);
+        alert('刪除錯誤');
+    }
 }
 
         //個人預算設定
