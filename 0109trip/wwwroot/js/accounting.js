@@ -28,7 +28,9 @@
         //    updateDashboard();
         //};
 
-window.onload = () => {
+window.onload = async () => {
+    // 1. 🔥 等待類別抓取完成
+    await fetchCategories();
     // 如果有 ID，就先去後端抓成員
     if (appState.currentTripId > 0) {
         fetchMembers(appState.currentTripId).then(() => {
@@ -112,6 +114,7 @@ function switchDay(tripId, dayKey, btn) {
              document.querySelector('.right-panel').scrollIntoView({ behavior: 'smooth' });
             }
 }
+//取得旅程成員資料
 async function fetchMembers(tripId) {
     try {
         const timestamp = new Date().getTime();
@@ -178,77 +181,6 @@ async function fetchMembers(tripId) {
         alert('無法載入成員列表');
     }
 }
-
-    // 修改 window.onload，加上 async 關鍵字
-    window.onload = async () => {
-
-        // 1. 🔥 重點：加了 await，程式會在這裡暫停，直到類別清單抓回來為止
-        await fetchCategories();
-
-        // 2. 類別抓完後，才繼續去抓成員或顯示畫面
-        if (appState.currentTripId > 0) {
-            fetchMembers(appState.currentTripId).then(() => {
-                loadDailyExpenses(appState.currentTripId, 1);
-                showPanel('addExpense');
-                updateDashboard();
-            });
-        } else {
-            showPanel('addExpense');
-            updateDashboard();
-        }
-    };
-
-    // 🔥 新增：從後端撈取類別清單
-    async function fetchCategories() {
-        try {
-            const response = await fetch('/Accounting/GetCategories');
-            if (response.ok) {
-                appState.categories = await response.json();
-                // 如果資料庫是空的，給一些預設值避免壞掉
-                if (appState.categories.length === 0) {
-                    appState.categories = ['食物', '交通', '住宿', '其他'];
-                }
-            }
-        } catch (err) {
-            console.error('類別載入失敗', err);
-            appState.categories = ['食物', '交通', '住宿', '其他']; // 發生錯誤時的備案
-        }
-    }
-
-    // 新增：設定個人預算的函式 (呼叫後端 API)
-    async function setPersonalBudget(userId, userName, currentBudget) {
-        const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
-
-        // 檢查輸入是否為有效數字
-        if (newBudget !== null && !isNaN(newBudget) && newBudget.trim() !== '') {
-            try {
-                // 使用 Form Data 傳送資料
-                const formData = new URLSearchParams();
-                formData.append('tripId', appState.currentTripId);
-                formData.append('userId', userId);
-                formData.append('budget', newBudget);
-
-                const response = await fetch('/Accounting/UpdateBudget', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: formData
-                });
-
-                if (response.ok) {
-                    // 更新成功後，重新撈取資料以更新畫面
-                    await fetchMembers(appState.currentTripId);
-                } else {
-                    alert('更新失敗，請稍後再試');
-                }
-            } catch (err) {
-                console.error(err);
-                alert('發生錯誤');
-            }
-        }
-    }
-
-
-
 
         //新增 / 編輯支出表單
         function renderAddForm(container, editData = null) {
@@ -482,34 +414,44 @@ async function deleteExpense(idx) {
     }
 }
 
-        //個人預算設定
-// 設定個人預算的函式 (呼叫後端 API)
-async function setPersonalBudget(userId, userName, currentBudget) {
-    // 1. 跳出輸入視窗
-    const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
+// ---------------- 貼到檔案最下面 ----------------
 
-    // 2. 檢查輸入是否有效 (不是取消，也不是空值)
+// 取得所有支出類別
+async function fetchCategories() {
+    try {
+        const response = await fetch('/Accounting/GetCategories');
+        if (response.ok) {
+            appState.categories = await response.json();
+            if (!appState.categories || appState.categories.length === 0) {
+                appState.categories = ['食物', '交通', '住宿', '其他'];
+            }
+        }
+    } catch (err) {
+        console.error('類別載入失敗', err);
+        appState.categories = ['食物', '交通', '住宿', '其他'];
+    }
+}
+
+// 設定個人預算
+async function setPersonalBudget(userId, userName, currentBudget) {
+    const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
     if (newBudget !== null && !isNaN(newBudget) && newBudget.trim() !== '') {
         try {
-            // 3. 準備要傳送的資料
             const formData = new URLSearchParams();
-            formData.append('tripId', appState.currentTripId); // 確保這裡有拿到目前的 TripId
+            formData.append('tripId', appState.currentTripId);
             formData.append('userId', userId);
             formData.append('budget', newBudget);
 
-            // 4. 發送 POST 請求給後端
             const response = await fetch('/Accounting/UpdateBudget', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: formData
             });
 
-            // 5. 處理結果
             if (response.ok) {
-                // 更新成功後，重新去後端撈一次最新的成員資料，讓畫面更新
                 await fetchMembers(appState.currentTripId);
             } else {
-                alert('更新失敗，請稍後再試');
+                alert('更新失敗');
             }
         } catch (err) {
             console.error(err);
@@ -524,6 +466,7 @@ async function setPersonalBudget(userId, userName, currentBudget) {
             list.forEach(e => { appState.members.forEach(m => { bal[m] += (e.payers[m] || 0); bal[m] -= (e.parts[m] || 0); }); });
             container.innerHTML = appState.members.map(m => `<div class="item-row" style="border:none;"><span>${m}</span><span class="${bal[m]>=0?'receivable':'owed'}">${bal[m]>=0?'應收':'欠款'} NT$ ${Math.abs(bal[m]).toFixed(1)}</span></div>`).join('');
         }
+
         //旅程結算
         function renderTripSummary(container) {
             const all = Object.values(appState.data[appState.currentTrip]).flat();
