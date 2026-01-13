@@ -56,14 +56,24 @@ function switchDay(tripId, dayKey, btn) {
 }
 
         //右側功能面板切換
-        function showPanel(type) {
+        async function showPanel(type) {
             document.querySelectorAll('.top-actions .action-btn').forEach(btn => btn.classList.remove('active-panel'));
             const activeBtn = document.getElementById(`btn-${type}`);
             if(activeBtn) activeBtn.classList.add('active-panel');
 
             const panel = document.getElementById('panel-content');
             if (type === 'members') {
-                panel.innerHTML = `<h3>旅程成員</h3><div style="margin-top:20px">${appState.members.map(m => `<div class="item-row"><span>${m}</span><button class="btn-edit" onclick="setPersonalBudget('${m}')">設預算</button></div>`).join('')}</div>`;
+                // 顯示載入中
+                panel.innerHTML = '<p style="padding:20px;">資料讀取中...</p>';
+
+                // 呼叫新寫的 fetchMembers (假設 appState.currentTripId 已經有值)
+                // 如果你的 currentTripId 還沒設定好，可以先傳入預設值或檢查
+                if (appState.currentTripId) {
+                    await fetchMembers(appState.currentTripId);
+                } else {
+                    panel.innerHTML = '<p style="padding:20px;">請先選擇旅程</p>';
+                }
+
             } else if (type === 'addExpense') {
                 appState.editingIndex = null;
                 renderAddForm(panel);
@@ -75,6 +85,44 @@ function switchDay(tripId, dayKey, btn) {
             if (window.innerWidth <= 992) {
              document.querySelector('.right-panel').scrollIntoView({ behavior: 'smooth' });
             }
+}
+async function fetchMembers(tripId) {
+    try {
+        const response = await fetch(`/Accounting/GetTripMembers?tripId=${tripId}`);
+        const result = await response.json();
+
+        // (1) 更新左側卡片的人數
+        const countSpan = document.getElementById('member-count');
+        if (countSpan) countSpan.innerText = result.count;
+
+        // (2) 更新 appState (重要！這樣你的記帳選單才會用到新抓到的成員)
+        // 假設後端回傳的物件結構是 { list: [{ userName: '...' }] }
+        appState.members = result.list.map(m => m.userName);
+
+        // (3) 更新右側面板顯示成員列表
+        const panel = document.getElementById('panel-content');
+        if (panel) {
+            let html = `<h3>旅程成員 (${result.count}人)</h3><div style="margin-top:20px">`;
+
+            if (result.list.length > 0) {
+                // 生成成員列表 HTML
+                html += result.list.map(m => `
+                    <div class="item-row">
+                        <span>${m.userName}</span>
+                        <button class="btn-edit" onclick="setPersonalBudget('${m.userName}')">設預算</button>
+                    </div>`
+                ).join('');
+            } else {
+                html += `<p>目前沒有成員</p>`;
+            }
+            html += `</div>`;
+            panel.innerHTML = html;
+        }
+
+    } catch (error) {
+        console.error('讀取成員失敗', error);
+        alert('無法載入成員列表');
+    }
 }
 
         //新增 / 編輯支出表單
