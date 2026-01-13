@@ -24,6 +24,7 @@ namespace _0109trip.Controllers
             return View(trips);
         }
         [HttpGet]
+        [ResponseCache(Location = ResponseCacheLocation.None, NoStore = true)]
         public async Task<IActionResult> GetTripMembers(int tripId)
         {
             var members = await (from tm in _context.TripMembers
@@ -33,11 +34,28 @@ namespace _0109trip.Controllers
                                  select new
                                  {
                                      UserId = tm.UserId,
-                                     UserName = u.UserName,
-                                     Budget = tm.Budget
+                                     UserName = u.FullName ?? u.UserName,
+                                     Budget = tm.Budget,
+                                     TotalSpent = _context.ExpenseParticipants
+                                          .Where(ep => ep.UserId == tm.UserId && ep.Expense.TripId == tripId)
+                                          .Sum(ep => (decimal?)ep.ShareAmount) ?? 0
                                  }).ToListAsync();
 
             return Json(new { count = members.Count, list = members });
+        }
+        [HttpPost]
+        public async Task<IActionResult> UpdateBudget(int tripId, int userId, decimal budget)
+        {
+            // 1. 找出該成員
+            var member = await _context.TripMembers
+                .FirstOrDefaultAsync(m => m.TripId == tripId && m.UserId == userId);
+
+            if (member == null) return NotFound("成員不存在");
+            // 2. 更新預算
+            member.Budget = budget;
+            await _context.SaveChangesAsync();
+            // 3. 回傳成功訊息
+            return Ok(new { success = true, message = "預算已更新" });
         }
 
 

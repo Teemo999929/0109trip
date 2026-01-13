@@ -1,8 +1,13 @@
 ﻿
         let appState = {
+            //currentTrip: 'trip1',
+            //currentDay: 'day1',
+            //members: ['小蘇', '小一', '小二'],
+            currentTripId: (typeof serverDefaultTripId !== 'undefined') ? serverDefaultTripId : 0,
             currentTrip: 'trip1',
             currentDay: 'day1',
-            members: ['小蘇', '小一', '小二'],
+            members: [], // 預設為空
+
             budgets: {
                 trip1: { '小蘇': 5000, '小一': 5000, '小二': 5000 },
                 trip2: { '小蘇': 5000, '小一': 5000, '小二': 5000 }
@@ -16,10 +21,23 @@
         };
 
         //頁面載入後：顯示「新增支出」面板，計算並顯示今日統計資料
-        window.onload = () => {
+        //window.onload = () => {
+        //    showPanel('addExpense');
+        //    updateDashboard();
+        //};
+
+window.onload = () => {
+    // 如果有 ID，就先去後端抓成員
+    if (appState.currentTripId > 0) {
+        fetchMembers(appState.currentTripId).then(() => {
             showPanel('addExpense');
             updateDashboard();
-        };
+        });
+    } else {
+        showPanel('addExpense');
+        updateDashboard();
+    }
+};
 
         //function switchDay(trip, day, btn) {
         //    appState.currentTrip = trip;
@@ -88,40 +106,94 @@ function switchDay(tripId, dayKey, btn) {
 }
 async function fetchMembers(tripId) {
     try {
-        const response = await fetch(`/Accounting/GetTripMembers?tripId=${tripId}`);
+        const timestamp = new Date().getTime();
+        const response = await fetch(`/Accounting/GetTripMembers?tripId=${tripId}&t=${timestamp}`);
+
         const result = await response.json();
 
         // (1) 更新左側卡片的人數
         const countSpan = document.getElementById('member-count');
         if (countSpan) countSpan.innerText = result.count;
 
-        // (2) 更新 appState (重要！這樣你的記帳選單才會用到新抓到的成員)
-        // 假設後端回傳的物件結構是 { list: [{ userName: '...' }] }
+        // (2) 更新 appState (給記帳選單用) 
         appState.members = result.list.map(m => m.userName);
 
         // (3) 更新右側面板顯示成員列表
         const panel = document.getElementById('panel-content');
-        if (panel) {
+        if (panel && document.getElementById('btn-members').classList.contains('active-panel')) {
+            // (這部分維持你原本的邏輯，或稍作美化)
             let html = `<h3>旅程成員 (${result.count}人)</h3><div style="margin-top:20px">`;
-
-            if (result.list.length > 0) {
-                // 生成成員列表 HTML
-                html += result.list.map(m => `
-                    <div class="item-row">
-                        <span>${m.userName}</span>
-                        <button class="btn-edit" onclick="setPersonalBudget('${m.userName}')">設預算</button>
-                    </div>`
-                ).join('');
-            } else {
-                html += `<p>目前沒有成員</p>`;
-            }
+            html += result.list.map(m => `
+            <div class="item-row">
+             <span>${m.userName}</span>
+                <button class="btn-edit" onclick="setPersonalBudget(${m.userId}, '${m.userName}', ${m.budget || 0})">設預算</button>
+         </div>`
+            ).join('');
             html += `</div>`;
             panel.innerHTML = html;
+        }
+        //  4. 重點新增：渲染「個人預算追蹤」卡片 (budget-list)
+        const budgetList = document.getElementById('budget-list');
+        if (budgetList) {
+            if (result.list.length === 0) {
+                budgetList.innerHTML = '<p style="color:#999; text-align:center;">尚無成員</p>';
+            } else {
+                budgetList.innerHTML = result.list.map(m => {
+                    const spent = m.totalSpent || 0;
+                    const budget = m.budget || 0;
+                    // 如果有預算且花費超過預算，就標示為超支
+                    const isOver = budget > 0 && spent > budget;
+
+                    return `
+                    <div class="budget-item" onclick="setPersonalBudget(${m.userId}, '${m.userName}', ${budget})" style="cursor:pointer; padding: 10px; border-bottom: 1px solid #eee;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom: 5px;">
+                            <span style="font-weight:500; color: var(--text-dark);">${m.userName}</span>
+                            <span style="font-size:14px; color: ${isOver ? '#ff5252' : '#64748b'}; font-weight: ${isOver ? 'bold' : 'normal'};">
+                                NT$ ${Math.round(spent)} <span style="font-size:12px; color:#94a3b8;">/ ${Math.round(budget)}</span>
+                            </span>
+                        </div>
+                        <div style="width: 100%; height: 6px; background-color: #f1f5f9; border-radius: 3px; overflow: hidden;">
+                            <div style="width: ${budget > 0 ? Math.min((spent / budget) * 100, 100) : 0}%; height: 100%; background-color: ${isOver ? '#ff5252' : 'var(--mint-green)'}; transition: width 0.3s;"></div>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
         }
 
     } catch (error) {
         console.error('讀取成員失敗', error);
         alert('無法載入成員列表');
+    }
+    // 新增：設定個人預算的函式 (呼叫後端 API)
+    async function setPersonalBudget(userId, userName, currentBudget) {
+        const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
+
+        // 檢查輸入是否為有效數字
+        if (newBudget !== null && !isNaN(newBudget) && newBudget.trim() !== '') {
+            try {
+                // 使用 Form Data 傳送資料
+                const formData = new URLSearchParams();
+                formData.append('tripId', appState.currentTripId);
+                formData.append('userId', userId);
+                formData.append('budget', newBudget);
+
+                const response = await fetch('/Accounting/UpdateBudget', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    // 更新成功後，重新撈取資料以更新畫面
+                    await fetchMembers(appState.currentTripId);
+                } else {
+                    alert('更新失敗，請稍後再試');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('發生錯誤');
+            }
+        }
     }
 }
 
@@ -228,16 +300,22 @@ async function fetchMembers(tripId) {
         //儀表板更新
         function updateDashboard() {
             const dayData = appState.data[appState.currentTrip][appState.currentDay];
-            document.getElementById('total-amount').innerText = dayData.reduce((s,i) => s + i.total, 0);
+            // 1. 今日支出總額、筆數
+            document.getElementById('total-amount').innerText = dayData.reduce((s, i) => s + i.total, 0);
             document.getElementById('expense-count').innerText = dayData.length;
             
-            document.getElementById('budget-list').innerHTML = appState.members.map(m => {
-                const spent = Object.values(appState.data[appState.currentTrip]).flat().reduce((s,e)=>s+(e.parts[m]||0),0);
-                const budget = appState.budgets[appState.currentTrip][m];
-                return `<div class="budget-item" onclick="setPersonalBudget('${m}')" style="cursor:pointer"><div style="font-size:12px;color:#64748b">${m}</div><div class="${spent>budget?'over-budget':''}">NT$ ${spent.toFixed(0)} <span style="font-size:11px;color:#94a3b8">/ ${budget}</span></div></div>`;
-            }).join('');
+            //document.getElementById('budget-list').innerHTML = appState.members.map(m => {
+            //    const spent = Object.values(appState.data[appState.currentTrip]).flat().reduce((s,e)=>s+(e.parts[m]||0),0);
+            //    const budget = appState.budgets[appState.currentTrip][m];
+            //    return `<div class="budget-item" onclick="setPersonalBudget('${m}')" style="cursor:pointer"><div style="font-size:12px;color:#64748b">${m}</div><div class="${spent>budget?'over-budget':''}">NT$ ${spent.toFixed(0)} <span style="font-size:11px;color:#94a3b8">/ ${budget}</span></div></div>`;
+            //}).join('');
 
-            document.getElementById('expense-list').innerHTML = dayData.map((e, idx) => `<div class="item-row"><div><b>[${e.cat}]</b> ${e.name}<div style="font-size:12px;color:#94a3b8">NT$ ${e.total}</div></div><div><button class="btn-edit" onclick="editExpense(${idx})">編</button><button class="btn-delete" onclick="deleteExpense(${idx})">刪</button></div></div>`).join('');
+            // 2. 支出清單
+            document.getElementById('expense-list').innerHTML = dayData.map((e, idx) =>
+                `<div class="item-row"><div><b>[${e.cat}]</b> ${e.name}<div style="font-size:12px;color:#94a3b8">NT$ ${e.total}</div></div><div><button class="btn-edit" onclick="editExpense(${idx})">編</button><button class="btn-delete" onclick="deleteExpense(${idx})">刪</button></div></div>`
+            ).join('');
+
+            // 3. 債務清單
             renderBalance(dayData, document.getElementById('debt-list'));
 }
 
@@ -254,10 +332,40 @@ async function fetchMembers(tripId) {
 }
 
         //個人預算設定
-        function setPersonalBudget(m) {
-            const b = prompt(`設定 ${m} 的旅程預算:`, appState.budgets[appState.currentTrip][m]);
-            if(b && !isNaN(b)) { appState.budgets[appState.currentTrip][m] = Number(b); updateDashboard(); }
+// 設定個人預算的函式 (呼叫後端 API)
+async function setPersonalBudget(userId, userName, currentBudget) {
+    // 1. 跳出輸入視窗
+    const newBudget = prompt(`設定 ${userName} 的旅程預算:`, currentBudget);
+
+    // 2. 檢查輸入是否有效 (不是取消，也不是空值)
+    if (newBudget !== null && !isNaN(newBudget) && newBudget.trim() !== '') {
+        try {
+            // 3. 準備要傳送的資料
+            const formData = new URLSearchParams();
+            formData.append('tripId', appState.currentTripId); // 確保這裡有拿到目前的 TripId
+            formData.append('userId', userId);
+            formData.append('budget', newBudget);
+
+            // 4. 發送 POST 請求給後端
+            const response = await fetch('/Accounting/UpdateBudget', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formData
+            });
+
+            // 5. 處理結果
+            if (response.ok) {
+                // 更新成功後，重新去後端撈一次最新的成員資料，讓畫面更新
+                await fetchMembers(appState.currentTripId);
+            } else {
+                alert('更新失敗，請稍後再試');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('發生錯誤');
         }
+    }
+}
 
         //債務結算
         function renderBalance(list, container) {
